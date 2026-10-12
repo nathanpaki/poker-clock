@@ -38,7 +38,7 @@ const STRUCTURE: [number, number, number][] = [
 
 const LEAGUES = [
   {
-    name: "Smokey Mountain Poker League",
+    name: "Crafty Brewery Poker",
     slug: "smokey-mountain",
     tz: "America/New_York",
     venues: ["Craft Brewery", "Asia Cafe", "Venue C"],
