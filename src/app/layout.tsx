@@ -23,3 +23,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </ClerkProvider>
   );
 }
+
+
+// Next.js root layout with Clerk authentication and custom fonts
