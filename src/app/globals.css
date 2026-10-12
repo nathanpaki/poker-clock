@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #07090c;        /* page background — near-black */
+  --color-panel: #0e131a;      /* clock panels */
+  --color-bar: #141b25;        /* bottom information bar, slightly lighter */
+  --color-line: #233042;       /* thin blue-gray borders */
+  --color-line-strong: #4a5b73;/* slash between blinds */
+  --color-track: #1c2633;      /* progress track */
+  --color-mist: #8494ab;       /* secondary text */
+  --color-snow: #f3f5f9;       /* primary digits */
+  --color-amber: #f6b31b;      /* level, progress, status */
+  --color-danger: #e5484d;     /* elimination confirm */
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --font-sans: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@keyframes pc-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+html, body { background: var(--color-ink); color: var(--color-snow); }
+body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--color-amber); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
