@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -7,6 +6,7 @@ import { StaffConsole } from "@/components/staff/staff-console";
 import { AuthzError, getTournamentContext } from "@/lib/auth";
 import { id as idSchema } from "@/lib/validation";
 import { getRoster, unregisteredPlayers } from "@/server/queries";
+import { tournamentQrSvg } from "@/server/qr";
 import { getPublicSnapshot } from "@/server/tournament-state";
 
 export const dynamic = "force-dynamic";
@@ -31,14 +31,15 @@ export default async function ControlPage({ params }: { params: Promise<{ id: st
     ctx.isLeagueAdmin ? Promise.resolve(null) : db.query.venueMemberships.findFirst({ where: and(eq(venueMemberships.venueId, t.venueId), eq(venueMemberships.userId, ctx.userId)) }),
   ]);
   if (!snap) notFound();
+  const qr = await tournamentQrSvg(t.publicCode);
   // The console still needs the clock even when the public view hides eliminations.
   return (
     <>
-      <Link href={`/admin/tournaments/${t.id}`} className="text-sm text-mist hover:text-snow">{t.name} details</Link>
       <StaffConsole
         tournamentId={t.id}
         code={t.publicCode}
         initial={snap}
+        qrSvg={qr.svg}
         timezone={ctx.venue.timezone}
         closed={t.status === "completed" || t.status === "cancelled"}
         perms={{ clock: perms.clock, check_in: perms.check_in, eliminate: perms.eliminate, managePlayers: ctx.isLeagueAdmin || !!vm?.canManagePlayers }}

@@ -18,11 +18,12 @@ export function Button({ variant = "secondary", className = "", ...p }: ButtonHT
 }
 
 export function Input({ className = "", ...p }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...p} className={`min-h-10 w-full rounded-lg border border-line bg-ink px-3 py-2 text-sm text-snow placeholder:text-line-strong ${className}`} />;
+  // A caller-supplied width wins over the default full width.
+  return <input {...p} className={`min-h-10 ${/(^|\s)w-/.test(className) ? "" : "w-full"} rounded-lg border border-line bg-ink px-3 py-2 text-sm text-snow placeholder:text-line-strong ${className}`} />;
 }
 
 export function Select({ className = "", ...p }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...p} className={`min-h-10 w-full rounded-lg border border-line bg-ink px-3 py-2 text-sm text-snow ${className}`} />;
+  return <select {...p} className={`min-h-10 ${/(^|\s)w-/.test(className) ? "" : "w-full"} rounded-lg border border-line bg-ink px-3 py-2 text-sm text-snow ${className}`} />;
 }
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {

@@ -2,13 +2,14 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs, blindLevels, leagues, tournamentTimerState } from "@/db/schema";
-import { RosterTable, SettingsForm, StatusControls, StructureEditor } from "@/components/admin/tournament-forms";
+import { auditLogs, blindLevels, blindStructures, leagues, tournamentTimerState, venues as venuesTable } from "@/db/schema";
+import { DuplicateTournamentForm, RosterTable, SettingsForm, StatusControls, TournamentStructureEditor } from "@/components/admin/tournament-forms";
 import { DeclareWinnerButton } from "@/components/staff/declare-winner-button";
 import { FinishingOrder } from "@/components/staff/finishing-order";
 import { Badge, Empty, Section } from "@/components/ui";
 import { AuthzError, getTournamentContext, resolveUserNames } from "@/lib/auth";
-import { formatInZone } from "@/lib/format";
+import { formatInZone, nextWeeklyLocal, toLocalInput } from "@/lib/format";
+import { structureInput } from "@/lib/validation";
 import { id as idSchema } from "@/lib/validation";
 import { getRoster } from "@/server/queries";
 import { publicTournamentUrl } from "@/lib/app-url";
@@ -25,8 +26,6 @@ async function ctxOr404(id: string) {
   }
 }
 
-/** "2026-10-09T19:00" for datetime-local inputs, in the venue's zone. */
-const toLocalInput = (d: Date, tz: string) => formatInZone(d, tz, false).replace(" ", "T");
 
 export default async function TournamentAdminPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await ctxOr404((await params).id);
@@ -40,6 +39,16 @@ export default async function TournamentAdminPage({ params }: { params: Promise<
       ? db.select().from(auditLogs).where(and(eq(auditLogs.tournamentId, t.id), eq(auditLogs.leagueId, t.leagueId))).orderBy(desc(auditLogs.createdAt)).limit(60)
       : Promise.resolve([]),
   ]);
+  const [savedStructures, leagueVenues] = perms.manage
+    ? await Promise.all([
+        db.select().from(blindStructures).where(eq(blindStructures.leagueId, t.leagueId)).orderBy(asc(blindStructures.name)),
+        db.select().from(venuesTable).where(and(eq(venuesTable.leagueId, t.leagueId), eq(venuesTable.active, true))).orderBy(asc(venuesTable.name)),
+      ])
+    : [[], []];
+  const saved = savedStructures.flatMap((x) => {
+    const parsed = structureInput.safeParse(x.levels);
+    return parsed.success ? [{ id: x.id, name: x.name, levels: parsed.data, isDefault: x.isDefault }] : [];
+  });
   const names = await resolveUserNames([...roster.flatMap((r) => [r.checkIn?.by, r.elimination?.by]), ...logs.map((l) => l.actorUserId)]);
   const nm = (id: string | null | undefined) => (id ? names.get(id) ?? "staff" : "—");
   const pub = publicTournamentUrl(t.publicCode);
@@ -133,9 +142,26 @@ export default async function TournamentAdminPage({ params }: { params: Promise<
 
       {perms.manage && (
         <>
-          <Section title="Blind structure">
-            <StructureEditor
+          <Section title="Copy for another week">
+            <div id="copy" className="scroll-mt-24">
+              <DuplicateTournamentForm
+                tournamentId={t.id}
+                defaultName={t.name}
+                defaultWhen={nextWeeklyLocal(t.scheduledAt, venue.timezone)}
+                venueId={leagueVenues.some((v) => v.id === t.venueId) ? t.venueId : leagueVenues[0]?.id ?? t.venueId}
+                venues={leagueVenues.map((v) => ({ id: v.id, name: v.name }))}
+                registeredCount={roster.length}
+              />
+            </div>
+          </Section>
+          <Section
+            title="Blind structure"
+            actions={<Link href={`/admin/leagues/${t.leagueId}/structures`} className="text-sm text-mist hover:text-snow">Saved structures</Link>}
+          >
+            <TournamentStructureEditor
               tournamentId={t.id}
+              tournamentName={t.name}
+              saved={saved}
               currentIndex={timer?.status === "not_started" ? -1 : timer?.levelIndex ?? -1}
               initial={levels.map((l) => ({ kind: l.kind, smallBlind: l.smallBlind, bigBlind: l.bigBlind, ante: l.ante, durationMin: l.durationSec / 60 }))}
             />

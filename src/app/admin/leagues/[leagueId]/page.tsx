@@ -2,12 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { leagueMemberships, leagues, venueMemberships, venues } from "@/db/schema";
+import { blindStructures, leagueMemberships, leagues, venueMemberships, venues } from "@/db/schema";
 import { AddMemberForm, BulkExportForm, CreateTournamentForm, LeagueSettingsForm, MemberAccess, VenueCreateForm, VenueRow } from "@/components/admin/league-forms";
 import { Badge, Empty, Section } from "@/components/ui";
 import { getLeagueRole, requireUserId, resolveUserNames } from "@/lib/auth";
+import { summarizeStructure } from "@/lib/blind-file";
 import { formatInZone } from "@/lib/format";
-import { id as idSchema } from "@/lib/validation";
+import { id as idSchema, structureInput } from "@/lib/validation";
 import { tournamentsForUser } from "@/server/queries";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,12 @@ export default async function LeaguePage({ params }: { params: Promise<{ leagueI
     ? null
     : await db.select().from(venueMemberships).where(and(eq(venueMemberships.leagueId, leagueId), eq(venueMemberships.userId, userId)));
   const canManagePlayers = isAdmin || !!myVenueAccess?.some((v) => v.canManagePlayers);
+  const structures = isAdmin
+    ? (await db.select().from(blindStructures).where(eq(blindStructures.leagueId, leagueId)).orderBy(asc(blindStructures.name))).map((s) => {
+        const parsed = structureInput.safeParse(s.levels);
+        return { id: s.id, name: s.name, isDefault: s.isDefault, summary: parsed.success ? summarizeStructure(parsed.data) : "invalid" };
+      })
+    : [];
 
   let members: { userId: string; role: "admin" | "staff"; name: string }[] = [];
   let accessByUser: Record<string, Record<string, (typeof venueMemberships.$inferSelect) | undefined>> = {};
@@ -50,6 +57,11 @@ export default async function LeaguePage({ params }: { params: Promise<{ leagueI
           <span className="font-medium">{r.t.name}</span> <span className="text-mist">at {r.venueName}</span>
         </Link>
         <span className="flex items-center gap-2 text-sm text-mist">
+          {isAdmin && (
+            <Link href={`/admin/tournaments/${r.t.id}#copy`} className="rounded-md border border-line px-2 py-0.5 text-xs hover:border-amber hover:text-snow" title="Copy for another week">
+              Copy
+            </Link>
+          )}
           {formatInZone(r.t.scheduledAt, tz, false)}
           <Badge tone={r.t.status === "running" ? "amber" : r.t.status === "completed" ? "ok" : "muted"}>{r.t.status}</Badge>
         </span>
@@ -61,7 +73,10 @@ export default async function LeaguePage({ params }: { params: Promise<{ leagueI
     <>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h1 className="font-display text-4xl font-bold">{league.name}</h1>
-        {canManagePlayers && <Link href={`/admin/leagues/${leagueId}/players`} className="rounded-lg border border-line px-4 py-2 text-sm hover:border-line-strong">Player list</Link>}
+        <div className="flex flex-wrap gap-2">
+          {isAdmin && <Link href={`/admin/leagues/${leagueId}/structures`} className="rounded-lg border border-line px-4 py-2 text-sm hover:border-line-strong">Blind structures</Link>}
+          {canManagePlayers && <Link href={`/admin/leagues/${leagueId}/players`} className="rounded-lg border border-line px-4 py-2 text-sm hover:border-line-strong">Player list</Link>}
+        </div>
       </div>
 
       <Section title="Current and upcoming">{active.length ? <ul className="divide-y divide-line">{active.map(row)}</ul> : <Empty>No upcoming tournaments{isAdmin ? ". Create one below." : " at your venues."}</Empty>}</Section>
@@ -73,6 +88,7 @@ export default async function LeaguePage({ params }: { params: Promise<{ leagueI
               <CreateTournamentForm
                 leagueId={leagueId}
                 venues={venueRows}
+                structures={structures}
                 past={tlist.slice(0, 25).map((r) => ({ id: r.t.id, label: `${r.t.name} (${formatInZone(r.t.scheduledAt, league.defaultTimezone, false).slice(0, 10)})` }))}
               />
             ) : (

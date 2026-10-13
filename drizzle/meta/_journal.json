@@ -15,6 +15,13 @@
       "when": 1791865116647,
       "tag": "0001_winner_and_bust_order",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791914303629,
+      "tag": "0002_blind_structures",
+      "breakpoints": true
     }
   ]
 }

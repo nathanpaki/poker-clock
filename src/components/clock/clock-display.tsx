@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import type { PublicSnapshot } from "@/server/tournament-state";
 import { formatChips, formatClock } from "@/lib/timer";
 import { formatTimeOfDay, ordinal } from "@/lib/format";
@@ -19,11 +19,15 @@ type Props = {
   code: string;
   clock: Clock;
   qrSvg: string | null;
-  /** Compact mode is used inside the staff control page: no bottom bar, no audio. */
+  /** Compact mode: no bottom bar, no audio. */
   compact?: boolean;
+  /** Buttons shown in the top-right corner (staff screen). */
+  headerActions?: ReactNode;
+  /** Whether this screen plays alert sounds. Defaults to !compact. */
+  playsAudio?: boolean;
 };
 
-export function ClockDisplay({ code, clock, qrSvg, compact = false }: Props) {
+export function ClockDisplay({ code, clock, qrSvg, compact = false, headerActions, playsAudio = !compact }: Props) {
   const { snap, effective, view, connected } = clock;
   const [banner, setBanner] = useState<AlertEvent | null>(null);
 
@@ -32,7 +36,7 @@ export function ClockDisplay({ code, clock, qrSvg, compact = false }: Props) {
     setBanner(e);
     setTimeout(() => setBanner((b) => (b?.key === e.key ? null : b)), 8000);
   }, []);
-  useClockAlerts(code, snap, effective, view.remaining, onVisual, !compact);
+  useClockAlerts(code, snap, effective, view.remaining, onVisual, playsAudio);
 
   const t = snap.tournament;
   const level = view.level;
@@ -74,16 +78,17 @@ export function ClockDisplay({ code, clock, qrSvg, compact = false }: Props) {
       }`}
     >
       {/* Header */}
-      <header className="flex items-baseline justify-between gap-4 px-[0.6vh]">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-[0.6vh]">
         <div className="shrink-0 whitespace-nowrap font-display text-amber text-[clamp(1.25rem,4.2vh,3.5rem)] font-semibold leading-none tracking-wide">
           {onBreak ? "Break" : `Level ${view.levelNumber || 1}`}
         </div>
-        <div className="flex items-center gap-3 text-right">
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2 text-right">
           {!connected && <span className="rounded-md border border-amber/50 px-2 py-0.5 text-sm text-amber">Reconnecting…</span>}
           <span className="font-display text-mist text-[clamp(0.95rem,3vh,2.4rem)] leading-tight">
             {t.venueName} <span className="text-line-strong">•</span> {t.name}
           </span>
-          {!compact && <AudioControls />}
+          {!compact && <AudioControls inline={!!headerActions} />}
+          {headerActions}
         </div>
       </header>
 

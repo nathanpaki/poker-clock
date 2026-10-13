@@ -271,6 +271,33 @@ export const playerEliminations = pgTable(
   ],
 );
 
+/**
+ * Reusable blind structures, owned by a league. Tournaments COPY the levels at
+ * creation, so editing a saved structure never rewrites past tournaments.
+ */
+export type StoredLevel = { kind: "level" | "break"; smallBlind: number; bigBlind: number; ante: number; durationMin: number };
+
+export const blindStructures = pgTable(
+  "blind_structures",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    leagueId: uuid("league_id").notNull().references(() => leagues.id, { onDelete: "restrict" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    levels: jsonb("levels").$type<StoredLevel[]>().notNull(),
+    /** Pre-selected when creating a tournament. At most one per league. */
+    isDefault: boolean("is_default").notNull().default(false),
+    createdBy: text("created_by").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    unique("blind_structures_name_uq").on(t.leagueId, t.name),
+    uniqueIndex("blind_structures_default_uq").on(t.leagueId).where(sql`${t.isDefault}`),
+    index("blind_structures_league_idx").on(t.leagueId),
+  ],
+);
+
 export const auditLogs = pgTable(
   "audit_logs",
   {
@@ -297,3 +324,4 @@ export type Tournament = typeof tournaments.$inferSelect;
 export type BlindLevelRow = typeof blindLevels.$inferSelect;
 export type TimerStateRow = typeof tournamentTimerState.$inferSelect;
 export type VenueMembership = typeof venueMemberships.$inferSelect;
+export type BlindStructure = typeof blindStructures.$inferSelect;

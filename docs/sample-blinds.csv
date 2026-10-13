@@ -1,0 +1,15 @@
+type,small_blind,big_blind,ante,minutes
+level,25,50,0,20
+level,50,100,0,20
+level,75,150,0,20
+level,100,200,0,20
+break,,,,10
+level,150,300,0,20
+level,200,400,0,20
+level,300,600,0,20
+level,400,800,0,20
+break,,,,10
+level,500,1000,0,20
+level,600,1200,0,20
+level,800,1600,0,20
+level,1000,2000,0,20

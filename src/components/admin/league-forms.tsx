@@ -165,9 +165,22 @@ export function MemberAccess({
   );
 }
 
-export function CreateTournamentForm({ leagueId, venues, past }: { leagueId: string; venues: VenueLite[]; past: { id: string; label: string }[] }) {
+export function CreateTournamentForm({
+  leagueId,
+  venues,
+  past,
+  structures,
+}: {
+  leagueId: string;
+  venues: VenueLite[];
+  past: { id: string; label: string }[];
+  structures: { id: string; name: string; isDefault: boolean; summary: string }[];
+}) {
   const { exec, pending, error } = useAction();
-  const [f, setF] = useState({ venueId: venues.find((v) => v.active)?.id ?? "", name: "", scheduledAt: "", maxEntrants: "", startingStack: "", anteEnabled: false, copyStructureFrom: "" });
+  const def = structures.find((s) => s.isDefault);
+  const [f, setF] = useState({ venueId: venues.find((v) => v.active)?.id ?? "", name: "", scheduledAt: "", maxEntrants: "", startingStack: "", anteEnabled: false });
+  // "s:<id>" saved structure, "t:<id>" copy a past tournament, "std" built-in standard.
+  const [source, setSource] = useState(def ? `s:${def.id}` : "std");
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setF({ ...f, [k]: e.target instanceof HTMLInputElement && e.target.type === "checkbox" ? e.target.checked : e.target.value });
   return (
@@ -175,10 +188,18 @@ export function CreateTournamentForm({ leagueId, venues, past }: { leagueId: str
       className="grid gap-3 sm:grid-cols-3"
       onSubmit={(e) => {
         e.preventDefault();
-        exec(() => createTournament({ leagueId, ...f, scheduledAt: f.scheduledAt }), {
-          onSuccess: (d) => d && (window.location.href = `/admin/tournaments/${d.tournamentId}`),
-          refresh: false,
-        });
+        const [kind, srcId] = source.split(":");
+        exec(
+          () =>
+            createTournament({
+              leagueId,
+              ...f,
+              structureId: kind === "s" ? srcId : undefined,
+              copyStructureFrom: kind === "t" ? srcId : undefined,
+              useStandard: kind === "std",
+            }),
+          { onSuccess: (d) => d && (window.location.href = `/admin/tournaments/${d.tournamentId}`), refresh: false },
+        );
       }}
     >
       <Field label="Venue">
@@ -188,16 +209,30 @@ export function CreateTournamentForm({ leagueId, venues, past }: { leagueId: str
       </Field>
       <Field label="Tournament name"><Input value={f.name} onChange={set("name")} required placeholder="Friday Tournament" /></Field>
       <Field label="Date and start time"><Input type="datetime-local" value={f.scheduledAt} onChange={set("scheduledAt")} required /></Field>
-      <Field label="Max entrants (optional)"><Input type="number" min={2} value={f.maxEntrants} onChange={set("maxEntrants")} /></Field>
-      <Field label="Starting stack (optional)"><Input type="number" min={1} value={f.startingStack} onChange={set("startingStack")} /></Field>
-      <Field label="Blind structure">
-        <Select value={f.copyStructureFrom} onChange={set("copyStructureFrom")}>
-          <option value="">Standard structure</option>
-          {past.map((p) => <option key={p.id} value={p.id}>Copy from {p.label}</option>)}
+      <Field label="Blind structure" hint={structures.length ? undefined : "Save structures under Blind structures to reuse them."}>
+        <Select value={source} onChange={(e) => setSource(e.target.value)}>
+          {structures.length > 0 && (
+            <optgroup label="Saved structures">
+              {structures.map((s) => (
+                <option key={s.id} value={`s:${s.id}`}>
+                  {s.name}{s.isDefault ? " (default)" : ""} · {s.summary}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {past.length > 0 && (
+            <optgroup label="Same blinds as…">
+              {past.map((p) => <option key={p.id} value={`t:${p.id}`}>{p.label}</option>)}
+            </optgroup>
+          )}
+          <option value="std">Built-in standard structure</option>
         </Select>
       </Field>
+      <Field label="Max entrants (optional)"><Input type="number" min={2} value={f.maxEntrants} onChange={set("maxEntrants")} /></Field>
+      <Field label="Starting stack (optional)"><Input type="number" min={1} value={f.startingStack} onChange={set("startingStack")} /></Field>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.anteEnabled} onChange={set("anteEnabled")} className="h-4 w-4 accent-amber" />Use antes</label>
       <div className="sm:col-span-2 sm:text-right"><Button variant="primary" disabled={pending || !f.venueId}>{pending ? "Creating…" : "Create tournament"}</Button></div>
+      <p className="text-xs text-mist sm:col-span-3">Running the same game every week? Open last week&rsquo;s tournament and use <strong>Copy</strong> instead — it brings the settings and player list too.</p>
       <div className="sm:col-span-3"><Feedback error={error} /></div>
     </form>
   );

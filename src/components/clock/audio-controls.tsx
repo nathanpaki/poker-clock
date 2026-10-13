@@ -10,7 +10,8 @@ const TESTS: { kind: AlertKind; label: string }[] = [
   { kind: "breakEnd", label: "Break ends" },
 ];
 
-export function AudioControls() {
+/** `inline`: show the "turn on sound" prompt next to the icon instead of floating over the screen. */
+export function AudioControls({ inline = false }: { inline?: boolean }) {
   const [open, setOpen] = useState(false);
   const [s, setS] = useState<AudioSettings>(DEFAULT_AUDIO);
   const [unlocked, setUnlocked] = useState(false);
@@ -51,7 +52,12 @@ export function AudioControls() {
         </svg>
       </button>
 
-      {s.enabled && !unlocked && (
+      {s.enabled && !unlocked && inline && (
+        <button type="button" onClick={unlock} className="min-h-11 whitespace-nowrap rounded-lg border border-amber/70 px-3 text-sm text-amber">
+          Sound off · tap
+        </button>
+      )}
+      {s.enabled && !unlocked && !inline && (
         <button
           type="button"
           onClick={unlock}

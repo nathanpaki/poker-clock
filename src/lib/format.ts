@@ -61,3 +61,22 @@ export function zonedLocalToUtc(local: string, timeZone: string): Date {
   utc = guess - zoneOffset(utc, timeZone); // second pass handles DST boundaries
   return new Date(utc);
 }
+
+/** "YYYY-MM-DDTHH:mm" wall-clock time at the venue. */
+export const toLocalInput = (d: Date, timeZone: string) => formatInZone(d, timeZone, false).replace(" ", "T");
+
+/**
+ * Same weekday and wall-clock time, one week later — and keep stepping a week
+ * at a time until it's in the future. Works in local time, so 7pm stays 7pm
+ * across daylight-saving changes.
+ */
+export function nextWeeklyLocal(source: Date, timeZone: string, now = new Date()): string {
+  const [date, time] = toLocalInput(source, timeZone).split("T");
+  const [y, m, d] = date.split("-").map(Number);
+  for (let weeks = 1; weeks < 2000; weeks++) {
+    const next = new Date(Date.UTC(y, m - 1, d + 7 * weeks));
+    const local = `${next.toISOString().slice(0, 10)}T${time}`;
+    if (zonedLocalToUtc(local, timeZone) > now) return local;
+  }
+  return `${date}T${time}`;
+}

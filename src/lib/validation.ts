@@ -31,3 +31,9 @@ export const DEFAULT_STRUCTURE: LevelInput[] = DEFAULT_ROWS.map((x): LevelInput 
 /** Optional integer form field: "" or missing → undefined. */
 export const optionalInt = (min: number, max: number) =>
   z.preprocess((v) => (v === "" || v === null || v === undefined ? undefined : Number(v)), z.number().int().min(min).max(max).optional());
+
+/** Optional UUID form field: "" or missing → undefined. */
+export const optionalId = z.preprocess((v) => (v === "" || v === null ? undefined : v), z.string().uuid("Invalid ID.").optional());
+
+/** "YYYY-MM-DDTHH:mm" from a datetime-local input; interpreted in the venue's time zone. */
+export const localDateTime = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "Pick a date and time.");

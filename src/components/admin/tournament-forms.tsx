@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { undoCheckIn, voidElimination } from "@/actions/roster";
-import { saveStructure, setTournamentStatus, updateTournamentSettings } from "@/actions/tournaments";
+import { saveTournamentAsStructure } from "@/actions/structures";
+import { duplicateTournament, saveStructure, setTournamentStatus, updateTournamentSettings } from "@/actions/tournaments";
+import { StructureEditor, type SavedStructureLite } from "./structure-editor";
 import { Button, Field, Input, Select } from "@/components/ui";
 import { Feedback, useAction } from "@/components/ui/use-action";
 import { formatTimeOfDay, ordinal } from "@/lib/format";
@@ -70,66 +72,97 @@ export function SettingsForm({
   );
 }
 
-export function StructureEditor({ tournamentId, initial, currentIndex }: { tournamentId: string; initial: LevelInput[]; currentIndex: number }) {
-  const { exec, pending, error, message } = useAction();
-  const [levels, setLevels] = useState<LevelInput[]>(initial);
-  const up = (i: number, patch: Partial<LevelInput>) => setLevels(levels.map((l, j) => (j === i ? { ...l, ...patch } : l)));
-  const move = (i: number, d: -1 | 1) => {
-    const j = i + d;
-    if (j < 0 || j >= levels.length) return;
-    const next = [...levels];
-    [next[i], next[j]] = [next[j], next[i]];
-    setLevels(next);
-  };
-  const addLevel = () => {
-    const last = [...levels].reverse().find((l) => l.kind === "level");
-    setLevels([...levels, { kind: "level", smallBlind: (last?.smallBlind ?? 50) * 2, bigBlind: (last?.bigBlind ?? 100) * 2, ante: 0, durationMin: last?.durationMin ?? 20 }]);
-  };
-  let n = 0;
+export function TournamentStructureEditor({
+  tournamentId,
+  tournamentName,
+  initial,
+  currentIndex,
+  saved,
+}: {
+  tournamentId: string;
+  tournamentName: string;
+  initial: LevelInput[];
+  currentIndex: number;
+  saved: SavedStructureLite[];
+}) {
+  const save = useAction();
+  const tmpl = useAction();
+  const [tmplName, setTmplName] = useState("");
+  const [makeDefault, setMakeDefault] = useState(false);
   return (
-    <div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[620px] text-sm">
-          <thead className="text-left text-xs text-mist">
-            <tr><th className="py-1 font-normal">#</th><th className="font-normal">Type</th><th className="font-normal">Small blind</th><th className="font-normal">Big blind</th><th className="font-normal">Ante</th><th className="font-normal">Minutes</th><th /></tr>
-          </thead>
-          <tbody>
-            {levels.map((l, i) => {
-              const label = l.kind === "level" ? String(++n) : "Break";
-              return (
-                <tr key={i} className={`border-t border-line ${i === currentIndex ? "bg-amber/10" : ""}`}>
-                  <td className="py-1.5 pr-2 font-display text-lg">{label}</td>
-                  <td className="pr-2">
-                    <Select value={l.kind} onChange={(e) => up(i, { kind: e.target.value as LevelInput["kind"] })} aria-label="Type">
-                      <option value="level">Level</option>
-                      <option value="break">Break</option>
-                    </Select>
-                  </td>
-                  {(["smallBlind", "bigBlind", "ante"] as const).map((k) => (
-                    <td key={k} className="pr-2">
-                      <Input type="number" min={0} disabled={l.kind === "break"} value={l.kind === "break" ? "" : l[k]} onChange={(e) => up(i, { [k]: Number(e.target.value) })} aria-label={k} />
-                    </td>
-                  ))}
-                  <td className="pr-2"><Input type="number" min={0.5} step={0.5} value={l.durationMin} onChange={(e) => up(i, { durationMin: Number(e.target.value) })} aria-label="Minutes" /></td>
-                  <td className="whitespace-nowrap">
-                    <Button variant="ghost" onClick={() => move(i, -1)} aria-label="Move up">↑</Button>
-                    <Button variant="ghost" onClick={() => move(i, 1)} aria-label="Move down">↓</Button>
-                    <Button variant="ghost" onClick={() => setLevels(levels.filter((_, j) => j !== i))} aria-label="Remove">✕</Button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button onClick={addLevel}>Add level</Button>
-        <Button onClick={() => setLevels([...levels, { kind: "break", smallBlind: 0, bigBlind: 0, ante: 0, durationMin: 10 }])}>Add break</Button>
-        <span className="flex-1" />
-        <Button variant="primary" disabled={pending} onClick={() => exec(() => saveStructure({ tournamentId, levels }), { success: "Structure saved. Displays update within a few seconds." })}>Save structure</Button>
-      </div>
-      <div className="mt-2"><Feedback error={error} message={message} /></div>
-    </div>
+    <>
+      <StructureEditor
+        initial={initial}
+        exportName={tournamentName}
+        currentIndex={currentIndex}
+        saved={saved}
+        saving={save.pending}
+        onSave={(levels, markSaved) =>
+          save.exec(() => saveStructure({ tournamentId, levels }), { success: "Structure saved. Displays update within a few seconds.", onSuccess: markSaved })
+        }
+      />
+      <Feedback error={save.error} message={save.message} />
+      <form
+        className="mt-4 grid gap-2 border-t border-line pt-4 sm:grid-cols-[1fr_auto_auto] sm:items-end"
+        onSubmit={(e) => {
+          e.preventDefault();
+          tmpl.exec(() => saveTournamentAsStructure({ tournamentId, name: tmplName, makeDefault }), { success: `Saved "${tmplName}". It's now available when creating tournaments.`, onSuccess: () => setTmplName("") });
+        }}
+      >
+        <Field label="Save these blinds for future tournaments" hint="Saves the version stored for this tournament. Save any edits above first.">
+          <Input value={tmplName} onChange={(e) => setTmplName(e.target.value)} placeholder="e.g. Friday 20-minute" required />
+        </Field>
+        <label className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault(e.target.checked)} className="h-4 w-4 accent-amber" />Make it the league default</label>
+        <Button disabled={tmpl.pending}>{tmpl.pending ? "Saving…" : "Save as structure"}</Button>
+        <div className="sm:col-span-3"><Feedback error={tmpl.error} message={tmpl.message} /></div>
+      </form>
+    </>
+  );
+}
+
+export function DuplicateTournamentForm({
+  tournamentId,
+  defaultName,
+  defaultWhen,
+  venueId,
+  venues,
+  registeredCount,
+}: {
+  tournamentId: string;
+  defaultName: string;
+  defaultWhen: string;
+  venueId: string;
+  venues: { id: string; name: string }[];
+  registeredCount: number;
+}) {
+  const { exec, pending, error } = useAction();
+  const [f, setF] = useState({ name: defaultName, scheduledAt: defaultWhen, venueId, copyPlayers: registeredCount > 0 });
+  return (
+    <form
+      className="grid gap-3 sm:grid-cols-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        exec(() => duplicateTournament({ tournamentId, ...f }), {
+          refresh: false,
+          onSuccess: (d) => d && (window.location.href = `/admin/tournaments/${d.tournamentId}`),
+        });
+      }}
+    >
+      <Field label="Name"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required /></Field>
+      <Field label="Date and start time" hint="Defaults to the same time next week."><Input type="datetime-local" value={f.scheduledAt} onChange={(e) => setF({ ...f, scheduledAt: e.target.value })} required /></Field>
+      <Field label="Venue">
+        <Select value={f.venueId} onChange={(e) => setF({ ...f, venueId: e.target.value })}>
+          {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </Select>
+      </Field>
+      <label className="flex items-center gap-2 text-sm sm:col-span-2">
+        <input type="checkbox" checked={f.copyPlayers} disabled={!registeredCount} onChange={(e) => setF({ ...f, copyPlayers: e.target.checked })} className="h-4 w-4 accent-amber" />
+        Also register the same {registeredCount} player{registeredCount === 1 ? "" : "s"} (inactive players are skipped; nobody is checked in)
+      </label>
+      <div className="sm:text-right"><Button variant="primary" disabled={pending}>{pending ? "Copying…" : "Create copy"}</Button></div>
+      <p className="text-xs text-mist sm:col-span-3">Copies the blinds, breaks and settings. The copy gets its own code and clock; this tournament isn&rsquo;t changed.</p>
+      <div className="sm:col-span-3"><Feedback error={error} /></div>
+    </form>
   );
 }
 
