@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, asc, eq, ilike } from "drizzle-orm";
+import { and, asc, count, eq, ilike, max } from "drizzle-orm";
 import { db } from "@/db";
-import { leagues, players } from "@/db/schema";
-import { PlayerCreateForm, PlayerRow } from "@/components/admin/player-forms";
+import { leagues, players, tournamentRegistrations, tournaments } from "@/db/schema";
+import { MergeGroup, PlayerCreateForm, PlayerRow } from "@/components/admin/player-forms";
 import { Empty, Input, Section } from "@/components/ui";
-import { AuthzError, requirePlayerManager } from "@/lib/auth";
+import { AuthzError, getLeagueRole, requirePlayerManager } from "@/lib/auth";
+import { formatInZone } from "@/lib/format";
+import { namesAreSimilar } from "@/lib/names";
+import { uniqueNameRuleActive } from "@/server/name-rule";
 import { id as idSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +17,11 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
   const { leagueId } = await params;
   const { q = "", inactive } = await searchParams;
   if (!idSchema.safeParse(leagueId).success) notFound();
+  let isAdmin = false;
   try {
-    await requirePlayerManager(leagueId);
+    const { userId } = await requirePlayerManager(leagueId);
+    const role = await getLeagueRole(userId, leagueId);
+    isAdmin = role === "admin" || role === "platform";
   } catch (e) {
     if (e instanceof AuthzError) notFound();
     throw e;
@@ -31,6 +37,36 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
     .orderBy(asc(players.displayName))
     .limit(500);
 
+  // Possible duplicates (league admins merge them). All players incl. inactive.
+  let groups: { label: string; records: Parameters<typeof MergeGroup>[0]["records"] }[] = [];
+  let ruleOn = true;
+  if (isAdmin) {
+    const [all, stats, on] = await Promise.all([
+      db.select().from(players).where(eq(players.leagueId, leagueId)).orderBy(asc(players.createdAt)).limit(3000),
+      db
+        .select({ playerId: tournamentRegistrations.playerId, n: count(), last: max(tournaments.scheduledAt) })
+        .from(tournamentRegistrations)
+        .innerJoin(tournaments, and(eq(tournaments.id, tournamentRegistrations.tournamentId), eq(tournaments.leagueId, tournamentRegistrations.leagueId)))
+        .where(eq(tournamentRegistrations.leagueId, leagueId))
+        .groupBy(tournamentRegistrations.playerId),
+      uniqueNameRuleActive(db),
+    ]);
+    ruleOn = on;
+    const rec = (p: (typeof all)[number]) => {
+      const st = stats.find((x) => x.playerId === p.id);
+      return { id: p.id, name: p.displayName, active: p.active, email: p.email, phone: p.phone, tournaments: Number(st?.n ?? 0), lastPlayed: st?.last ? formatInZone(st.last, league.defaultTimezone, false).slice(0, 10) : null };
+    };
+    const byKey = new Map<string, typeof all>();
+    for (const p of all) byKey.set(p.nameKey, [...(byKey.get(p.nameKey) ?? []), p]);
+    for (const list of byKey.values()) if (list.length > 1) groups.push({ label: "Same name: these must be merged before duplicate protection can be switched on", records: list.map(rec) });
+    const keys = [...byKey.keys()];
+    const pairs: string[][] = [];
+    for (let i = 0; i < keys.length && pairs.length < 30; i++)
+      for (let j = i + 1; j < keys.length && pairs.length < 30; j++) if (namesAreSimilar(keys[i], keys[j])) pairs.push([keys[i], keys[j]]);
+    for (const [a, b] of pairs) groups.push({ label: "Similar names: merge only if this is the same person", records: [...byKey.get(a)!, ...byKey.get(b)!].map(rec) });
+  }
+  const exactGroups = groups.filter((g) => g.label.startsWith("Same name")).length;
+
   return (
     <>
       <div>
@@ -38,6 +74,25 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
         <h1 className="font-display text-4xl font-bold">Players</h1>
       </div>
       <Section title="Add a player"><PlayerCreateForm leagueId={leagueId} /></Section>
+      {isAdmin && (groups.length > 0 || !ruleOn) && (
+        <Section title="Possible duplicates">
+          <p className={`mb-3 text-sm ${ruleOn ? "text-mist" : "text-amber"}`}>
+            {ruleOn
+              ? "Duplicate protection is on: the database won't accept two players with the same name in this league. Similar names below are allowed but worth checking."
+              : exactGroups
+                ? `Duplicate protection is waiting on ${exactGroups} name${exactGroups === 1 ? "" : "s"} below. Merge them (in every league), then run: npx tsx scripts/enforce-unique-names.ts`
+                : "No same-name duplicates left in this league. Once every league is clear, run: npx tsx scripts/enforce-unique-names.ts"}
+          </p>
+          {groups.length ? (
+            <ul className="flex flex-col gap-3">
+              {groups.map((g) => (
+                <MergeGroup key={g.records.map((r) => r.id).join()} leagueId={leagueId} records={g.records} label={g.label} />
+              ))}
+            </ul>
+          ) : null}
+          <p className="mt-3 text-xs text-mist">Merging moves every tournament, check-in and result to the record you keep, fills in missing contact details, and removes the extra record. It&rsquo;s logged, and it&rsquo;s refused if both records played the same tournament.</p>
+        </Section>
+      )}
       <Section title={`${rows.length} player${rows.length === 1 ? "" : "s"}`}>
         <form className="mb-4 flex flex-wrap items-center gap-3">
           <Input name="q" defaultValue={q} placeholder="Search by name" className="max-w-xs" />

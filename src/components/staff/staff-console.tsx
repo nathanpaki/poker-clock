@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { clockAction, type ClockInput } from "@/actions/clock";
-import { checkIn, declareWinner, eliminate, quickAddPlayer, registerPlayers } from "@/actions/roster";
+import { checkIn, checkInExisting, declareWinner, eliminate, quickAddPlayer, registerPlayers } from "@/actions/roster";
 import { ClockDisplay } from "@/components/clock/clock-display";
 import { useTournamentClock } from "@/components/clock/use-tournament-clock";
 import { Button, Input } from "@/components/ui";
@@ -136,7 +136,7 @@ function CheckInSheet({
   canQuickAdd: boolean;
   onDone: (msg: string) => void;
 }) {
-  const { exec, pending, error } = useAction();
+  const { exec, pending, error, conflict, clear } = useAction();
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const term = q.trim().toLowerCase();
@@ -157,7 +157,10 @@ function CheckInSheet({
       <Input
         data-autofocus
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          if (conflict) clear();
+        }}
         placeholder="Type a name"
         className="min-h-14 text-xl"
         aria-label="Search players"
@@ -165,7 +168,36 @@ function CheckInSheet({
         autoCorrect="off"
         spellCheck={false}
       />
-      <Feedback error={error} />
+      {conflict ? (
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-amber/60 bg-amber/5 p-4">
+          <p className="text-lg">{error}</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(conflict.kind === "exact" ? [conflict.player] : conflict.players).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                disabled={pending}
+                className="min-h-14 rounded-xl bg-amber px-4 text-left font-display text-xl font-semibold text-ink disabled:opacity-50"
+                onClick={() => go(p.id, () => checkInExisting({ tournamentId, playerId: p.id }), `${p.name} checked in`)}
+              >
+                {p.active ? `Check in ${p.name}` : `Reactivate and check in ${p.name}`}
+              </button>
+            ))}
+            {conflict.kind === "similar" && (
+              <button
+                type="button"
+                disabled={pending}
+                className="min-h-14 rounded-xl border border-line px-4 text-left text-lg disabled:opacity-50"
+                onClick={() => go("new", () => quickAddPlayer({ tournamentId, displayName: q.trim(), checkInNow: true, allowSimilar: true }), `${q.trim()} added and checked in`)}
+              >
+                No, add &ldquo;{q.trim()}&rdquo; as a different person
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <Feedback error={error} />
+      )}
 
       <section>
         <h3 className="mb-2 text-sm text-mist">Registered, not checked in yet · tap to check in</h3>

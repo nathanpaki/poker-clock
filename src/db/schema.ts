@@ -104,6 +104,15 @@ export const players = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     leagueId: uuid("league_id").notNull().references(() => leagues.id, { onDelete: "restrict" }),
     displayName: text("display_name").notNull(),
+    /**
+     * Matching key, computed by Postgres (keep in step with normalizeName in
+     * lib/names.ts): "Hank S.", "hank s" and "HANK  S" all become "hank s".
+     */
+    nameKey: text("name_key")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`btrim(regexp_replace(regexp_replace(lower(display_name), '[^[:alnum:][:space:]]+', '', 'g'), '[[:space:]]+', ' ', 'g'))`,
+      ),
     email: text("email"),
     phone: text("phone"),
     notes: text("notes"),
@@ -114,6 +123,10 @@ export const players = pgTable(
   (t) => [
     unique("players_id_league_uq").on(t.id, t.leagueId),
     index("players_league_name_idx").on(t.leagueId, t.displayName),
+    index("players_league_name_key_idx").on(t.leagueId, t.nameKey),
+    // One player per name per league (including inactive players). The migration
+    // only creates this once existing duplicates are merged; see scripts/enforce-unique-names.ts.
+    uniqueIndex("players_name_key_uq").on(t.leagueId, t.nameKey),
   ],
 );
 

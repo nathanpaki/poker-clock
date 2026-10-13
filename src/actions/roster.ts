@@ -9,6 +9,7 @@ import { run, UserError } from "@/lib/action-result";
 import { requirePlayerManager, requireTournamentPermission } from "@/lib/auth";
 import { describe } from "@/lib/timer";
 import { id, name } from "@/lib/validation";
+import { assertNameAvailable, lockLeaguePlayers } from "@/server/player-names";
 import { activeEliminationsInOrder, audit, isUniqueViolation, loadAdvancedState, lockTournament, playerCounts, recomputePositions, writeState } from "@/server/tournament-state";
 
 const assertOpen = (status: string) => {
@@ -67,9 +68,9 @@ export async function registerPlayers(input: { tournamentId: string; playerIds: 
 }
 
 /** Create a league player and register (and optionally check in) in one step. */
-export async function quickAddPlayer(input: { tournamentId: string; displayName: string; checkInNow: boolean }) {
+export async function quickAddPlayer(input: { tournamentId: string; displayName: string; checkInNow: boolean; allowSimilar?: boolean }) {
   return run(async () => {
-    const v = z.object({ tournamentId: id, displayName: name, checkInNow: z.boolean() }).parse(input);
+    const v = z.object({ tournamentId: id, displayName: name, checkInNow: z.boolean(), allowSimilar: z.boolean().default(false) }).parse(input);
     const ctx = await requireTournamentPermission(v.tournamentId, "check_in");
     assertOpen(ctx.tournament.status);
     // Creating a league player needs the player-manager permission too.
@@ -77,7 +78,15 @@ export async function quickAddPlayer(input: { tournamentId: string; displayName:
     const leagueId = ctx.tournament.leagueId;
     await db.transaction(async (tx) => {
       await lockTournament(tx, v.tournamentId);
-      const [p] = await tx.insert(players).values({ leagueId, displayName: v.displayName }).returning();
+      await lockLeaguePlayers(tx, leagueId);
+      await assertNameAvailable(tx, leagueId, v.displayName, { allowSimilar: v.allowSimilar });
+      const [p] = await tx
+        .insert(players)
+        .values({ leagueId, displayName: v.displayName })
+        .returning()
+        .catch((e) => {
+          throw isUniqueViolation(e) ? new UserError("A player with that name already exists in this league.") : e;
+        });
       const [reg] = await tx.insert(tournamentRegistrations).values({ leagueId, tournamentId: v.tournamentId, playerId: p.id, registeredBy: ctx.userId }).returning();
       if (v.checkInNow) {
         await tx.insert(playerCheckIns).values({ registrationId: reg.id, tournamentId: v.tournamentId, checkedInBy: ctx.userId });
@@ -319,5 +328,48 @@ export async function moveElimination(input: { tournamentId: string; elimination
       });
     });
     revalidatePath(`/admin/tournaments/${v.tournamentId}`);
+  });
+}
+
+/**
+ * "Did you mean John?" → check in the EXISTING league player: reactivates them
+ * if needed (player-manager permission), registers them if needed, and checks
+ * them in. Idempotent: an already checked-in player is just reported.
+ */
+export async function checkInExisting(input: { tournamentId: string; playerId: string }) {
+  return run(async () => {
+    const v = z.object({ tournamentId: id, playerId: id }).parse(input);
+    const ctx = await requireTournamentPermission(v.tournamentId, "check_in");
+    assertOpen(ctx.tournament.status);
+    const leagueId = ctx.tournament.leagueId;
+    const result = await db.transaction(async (tx) => {
+      await lockTournament(tx, v.tournamentId);
+      const p = await tx.query.players.findFirst({ where: and(eq(players.id, v.playerId), eq(players.leagueId, leagueId)) });
+      if (!p) throw new UserError("Player not found in this league.");
+      if (!p.active) {
+        await requirePlayerManager(leagueId); // reactivating needs player-management rights
+        await tx.update(players).set({ active: true, updatedAt: new Date() }).where(eq(players.id, p.id));
+        await audit(tx, { leagueId, tournamentId: v.tournamentId, actorUserId: ctx.userId, action: "player.reactivate", entityType: "player", entityId: p.id });
+      }
+      let reg = await tx.query.tournamentRegistrations.findFirst({
+        where: and(eq(tournamentRegistrations.tournamentId, v.tournamentId), eq(tournamentRegistrations.playerId, p.id)),
+      });
+      if (!reg) {
+        if (ctx.tournament.maxEntrants) {
+          const n = await tx.select({ id: tournamentRegistrations.id }).from(tournamentRegistrations).where(eq(tournamentRegistrations.tournamentId, v.tournamentId));
+          if (n.length >= ctx.tournament.maxEntrants) throw new UserError(`Registration is full (${ctx.tournament.maxEntrants} max).`);
+        }
+        [reg] = await tx.insert(tournamentRegistrations).values({ leagueId, tournamentId: v.tournamentId, playerId: p.id, registeredBy: ctx.userId }).returning();
+      }
+      const already = await tx.query.playerCheckIns.findFirst({ where: and(eq(playerCheckIns.registrationId, reg.id), isNull(playerCheckIns.voidedAt)) });
+      if (!already) {
+        await tx.insert(playerCheckIns).values({ registrationId: reg.id, tournamentId: v.tournamentId, checkedInBy: ctx.userId });
+        await recomputePositions(tx, v.tournamentId);
+        await audit(tx, { leagueId, tournamentId: v.tournamentId, actorUserId: ctx.userId, action: "checkin.create", entityType: "registration", entityId: reg.id, data: { existingPlayer: p.id } });
+      }
+      return { name: p.displayName, alreadyCheckedIn: !!already, reactivated: !p.active };
+    });
+    revalidatePath(`/admin/tournaments/${v.tournamentId}`);
+    return result;
   });
 }
