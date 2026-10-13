@@ -42,7 +42,13 @@ export default async function ControlPage({ params }: { params: Promise<{ id: st
         timezone={ctx.venue.timezone}
         closed={t.status === "completed" || t.status === "cancelled"}
         perms={{ clock: perms.clock, check_in: perms.check_in, eliminate: perms.eliminate, managePlayers: ctx.isLeagueAdmin || !!vm?.canManagePlayers }}
-        roster={roster.map((r) => ({ registrationId: r.registrationId, name: r.name, checkedInAt: r.checkIn?.at ?? null, eliminated: !!r.elimination }))}
+        roster={roster.map((r) => ({
+          registrationId: r.registrationId,
+          name: r.name,
+          checkedInAt: r.checkIn?.at ?? null,
+          eliminated: !!r.elimination,
+          elimination: r.elimination ? { id: r.elimination.id, position: r.elimination.position, at: r.elimination.at, isWinner: r.elimination.isWinner } : null,
+        }))}
         unregistered={unregistered}
       />
     </>

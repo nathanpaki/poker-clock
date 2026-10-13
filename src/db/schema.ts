@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -246,6 +247,13 @@ export const playerEliminations = pgTable(
     /** Captured from the authoritative timer inside the same transaction. */
     levelNumber: integer("level_number"),
     levelIndex: integer("level_index"),
+    /**
+     * Finishing order (ascending = busted earlier = worse position). Starts as the
+     * bust time in ms; staff can reorder without altering the recorded bust time.
+     */
+    orderKey: bigint("order_key", { mode: "number" }).notNull(),
+    /** The last player standing, declared by staff. Always finishes 1st. */
+    isWinner: boolean("is_winner").notNull().default(false),
     voidedAt: ts("voided_at"),
     voidedBy: text("voided_by"),
     voidReason: text("void_reason"),
@@ -257,6 +265,8 @@ export const playerEliminations = pgTable(
       name: "eliminations_registration_fk",
     }),
     uniqueIndex("eliminations_active_uq").on(t.registrationId).where(sql`${t.voidedAt} IS NULL`),
+    // At most one active winner per tournament.
+    uniqueIndex("eliminations_winner_uq").on(t.tournamentId).where(sql`${t.isWinner} AND ${t.voidedAt} IS NULL`),
     index("eliminations_tournament_idx").on(t.tournamentId, t.eliminatedAt),
   ],
 );

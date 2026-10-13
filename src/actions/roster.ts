@@ -4,16 +4,23 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db, type Tx } from "@/db";
-import { playerCheckIns, playerEliminations, players, tournamentRegistrations } from "@/db/schema";
+import { playerCheckIns, playerEliminations, players, tournamentRegistrations, tournaments } from "@/db/schema";
 import { run, UserError } from "@/lib/action-result";
 import { requirePlayerManager, requireTournamentPermission } from "@/lib/auth";
 import { describe } from "@/lib/timer";
 import { id, name } from "@/lib/validation";
-import { audit, isUniqueViolation, loadAdvancedState, lockTournament, playerCounts, recomputePositions } from "@/server/tournament-state";
+import { activeEliminationsInOrder, audit, isUniqueViolation, loadAdvancedState, lockTournament, playerCounts, recomputePositions, writeState } from "@/server/tournament-state";
 
 const assertOpen = (status: string) => {
   if (status === "completed" || status === "cancelled") throw new UserError("This tournament is closed. Reopen it to make changes.");
 };
+
+/** New busts sort after every existing one, even after manual reordering. */
+async function nextOrderKey(tx: Tx, tournamentId: string, now: number) {
+  const elims = await activeEliminationsInOrder(tx, tournamentId);
+  const maxKey = elims.reduce((m, e) => Math.max(m, e.orderKey), 0);
+  return Math.max(now, maxKey + 1);
+}
 
 /** Load a registration ONLY if it belongs to this tournament. */
 async function getRegistration(tx: Tx, tournamentId: string, registrationId: string) {
@@ -160,7 +167,7 @@ export async function eliminate(input: { tournamentId: string; registrationId: s
       const already = await tx.query.playerEliminations.findFirst({ where: and(eq(playerEliminations.registrationId, reg.id), isNull(playerEliminations.voidedAt)) });
       if (already) throw new UserError("Already eliminated.");
       const counts = await playerCounts(tx, v.tournamentId);
-      if (counts.remaining <= 1) throw new UserError("That's the last player standing — they're the winner.");
+      if (counts.remaining <= 1) throw new UserError("Only one player is left. Declare them the winner instead.");
       const now = Date.now();
       const { state, levels } = await loadAdvancedState(tx, v.tournamentId, now);
       const d = describe(state, levels, now);
@@ -168,7 +175,7 @@ export async function eliminate(input: { tournamentId: string; registrationId: s
       try {
         [row] = await tx
           .insert(playerEliminations)
-          .values({ registrationId: reg.id, tournamentId: v.tournamentId, eliminatedAt: new Date(now), eliminatedBy: ctx.userId, levelNumber: d.levelNumber || null, levelIndex: state.levelIndex })
+          .values({ registrationId: reg.id, tournamentId: v.tournamentId, eliminatedAt: new Date(now), eliminatedBy: ctx.userId, levelNumber: d.levelNumber || null, levelIndex: state.levelIndex, orderKey: await nextOrderKey(tx, v.tournamentId, now) })
           .returning();
       } catch (e) {
         if (isUniqueViolation(e)) throw new UserError("Already eliminated.");
@@ -206,6 +213,109 @@ export async function voidElimination(input: { tournamentId: string; elimination
         entityType: "elimination",
         entityId: v.eliminationId,
         data: { reason: v.reason, original: { eliminatedAt: res[0].eliminatedAt, finishPosition: res[0].finishPosition, eliminatedBy: res[0].eliminatedBy } },
+      });
+    });
+    revalidatePath(`/admin/tournaments/${v.tournamentId}`);
+  });
+}
+
+/**
+ * Ends the game: the last player standing finishes 1st. Records a winner row
+ * (so positions and exports are complete), pauses the clock, and closes the
+ * tournament. To fix a mistake, reopen the tournament and undo the winner.
+ */
+export async function declareWinner(input: { tournamentId: string; registrationId: string }) {
+  return run(async () => {
+    const v = z.object({ tournamentId: id, registrationId: id }).parse(input);
+    const ctx = await requireTournamentPermission(v.tournamentId, "eliminate");
+    assertOpen(ctx.tournament.status);
+    const result = await db.transaction(async (tx) => {
+      await lockTournament(tx, v.tournamentId);
+      const reg = await getRegistration(tx, v.tournamentId, v.registrationId);
+      const ci = await tx.query.playerCheckIns.findFirst({ where: and(eq(playerCheckIns.registrationId, reg.id), isNull(playerCheckIns.voidedAt)) });
+      if (!ci) throw new UserError("Only a checked-in player can win.");
+      const already = await tx.query.playerEliminations.findFirst({ where: and(eq(playerEliminations.registrationId, reg.id), isNull(playerEliminations.voidedAt)) });
+      if (already) throw new UserError("That player is already out.");
+      const counts = await playerCounts(tx, v.tournamentId);
+      if (counts.remaining !== 1) throw new UserError(`There are still ${counts.remaining} players in. Eliminate the others first.`);
+
+      const now = Date.now();
+      const { state, levels } = await loadAdvancedState(tx, v.tournamentId, now);
+      const d = describe(state, levels, now);
+      try {
+        await tx.insert(playerEliminations).values({
+          registrationId: reg.id,
+          tournamentId: v.tournamentId,
+          eliminatedAt: new Date(now),
+          eliminatedBy: ctx.userId,
+          levelNumber: d.levelNumber || null,
+          levelIndex: state.levelIndex,
+          orderKey: await nextOrderKey(tx, v.tournamentId, now),
+          isWinner: true,
+        });
+      } catch (e) {
+        if (isUniqueViolation(e)) throw new UserError("A winner has already been declared.");
+        throw e;
+      }
+      await recomputePositions(tx, v.tournamentId);
+
+      // Stop the clock and close the tournament.
+      if (state.status === "running" || state.status === "break")
+        await writeState(tx, v.tournamentId, { ...state, status: "paused", remainingMs: Math.max(0, d.remaining), levelEndsAt: null, breakEndsAt: null });
+      await tx.update(tournaments).set({ status: "completed", completedAt: new Date(now) }).where(eq(tournaments.id, v.tournamentId));
+
+      const player = await tx.query.players.findFirst({ where: and(eq(players.id, reg.playerId), eq(players.leagueId, ctx.tournament.leagueId)) });
+      await audit(tx, { leagueId: ctx.tournament.leagueId, tournamentId: v.tournamentId, actorUserId: ctx.userId, action: "tournament.winner", entityType: "registration", entityId: reg.id, data: { playerId: reg.playerId } });
+      return { name: player?.displayName ?? "Winner" };
+    });
+    revalidatePath(`/admin/tournaments/${v.tournamentId}`);
+    return result;
+  });
+}
+
+/**
+ * Change a busted player's finishing position (e.g. two players busted on the
+ * same hand were recorded in the wrong order). Recorded bust times are not
+ * changed; only the finishing order. Allowed on closed tournaments too, since
+ * results are usually checked after the game, and every move is audited.
+ */
+export async function moveElimination(input: { tournamentId: string; eliminationId: string; toPosition: number }) {
+  return run(async () => {
+    const v = z.object({ tournamentId: id, eliminationId: id, toPosition: z.number().int().min(1).max(10_000) }).parse(input);
+    const ctx = await requireTournamentPermission(v.tournamentId, "eliminate");
+    if (ctx.tournament.status === "cancelled") throw new UserError("This tournament was cancelled.");
+    await db.transaction(async (tx) => {
+      await lockTournament(tx, v.tournamentId);
+      const { checkedIn } = await playerCounts(tx, v.tournamentId);
+      const all = await activeEliminationsInOrder(tx, v.tournamentId);
+      const target = all.find((e) => e.id === v.eliminationId);
+      if (!target) throw new UserError("That elimination was corrected or doesn't exist. Refresh and try again.");
+      if (target.isWinner) throw new UserError("The winner always finishes 1st. Undo the winner first if this is wrong.");
+
+      // Busted players occupy positions checkedIn (first out) down to checkedIn - (n - 1).
+      const movable = all.filter((e) => !e.isWinner);
+      const best = checkedIn - (movable.length - 1);
+      if (v.toPosition < best || v.toPosition > checkedIn)
+        throw new UserError(`Busted players can be placed from ${best} to ${checkedIn}.${best > 1 ? " Better positions belong to players still in, or the winner." : ""}`);
+      const from = checkedIn - movable.findIndex((e) => e.id === target.id);
+      if (from === v.toPosition) return;
+
+      // Reorder, then hand out the existing keys in the new order (strictly increasing).
+      const keys = movable.map((e) => e.orderKey);
+      for (let i = 1; i < keys.length; i++) if (keys[i] <= keys[i - 1]) keys[i] = keys[i - 1] + 1;
+      const order = movable.filter((e) => e.id !== target.id);
+      order.splice(checkedIn - v.toPosition, 0, target);
+      for (let i = 0; i < order.length; i++)
+        if (order[i].orderKey !== keys[i]) await tx.update(playerEliminations).set({ orderKey: keys[i] }).where(eq(playerEliminations.id, order[i].id));
+      await recomputePositions(tx, v.tournamentId);
+      await audit(tx, {
+        leagueId: ctx.tournament.leagueId,
+        tournamentId: v.tournamentId,
+        actorUserId: ctx.userId,
+        action: "elimination.reorder",
+        entityType: "elimination",
+        entityId: target.id,
+        data: { fromPosition: from, toPosition: v.toPosition },
       });
     });
     revalidatePath(`/admin/tournaments/${v.tournamentId}`);

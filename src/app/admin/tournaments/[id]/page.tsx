@@ -4,6 +4,8 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLogs, blindLevels, leagues, tournamentTimerState } from "@/db/schema";
 import { RosterTable, SettingsForm, StatusControls, StructureEditor } from "@/components/admin/tournament-forms";
+import { DeclareWinnerButton } from "@/components/staff/declare-winner-button";
+import { FinishingOrder } from "@/components/staff/finishing-order";
 import { Badge, Empty, Section } from "@/components/ui";
 import { AuthzError, getTournamentContext, resolveUserNames } from "@/lib/auth";
 import { formatInZone } from "@/lib/format";
@@ -43,6 +45,12 @@ export default async function TournamentAdminPage({ params }: { params: Promise<
   const pub = publicTournamentUrl(t.publicCode);
   const checkedIn = roster.filter((r) => r.checkIn).length;
   const out = roster.filter((r) => r.elimination).length;
+  const open = t.status === "scheduled" || t.status === "running";
+  const stillIn = roster.filter((r) => r.checkIn && !r.elimination);
+  const winner = roster.find((r) => r.elimination?.isWinner);
+  const finishers = roster
+    .filter((r) => r.elimination?.position)
+    .map((r) => ({ eliminationId: r.elimination!.id, name: r.name, position: r.elimination!.position!, at: r.elimination!.at, isWinner: r.elimination!.isWinner }));
 
   const rosterRows = [...roster]
     .sort((a, b) => (a.elimination?.position ?? 0) - (b.elimination?.position ?? 0) || a.name.localeCompare(b.name))
@@ -80,7 +88,7 @@ export default async function TournamentAdminPage({ params }: { params: Promise<
           ["Code", t.publicCode],
           ["Registered", roster.length],
           ["Checked in", checkedIn],
-          ["Still in", checkedIn - out],
+          winner ? ["Winner", winner.name] : ["Still in", checkedIn - out],
         ].map(([k, v]) => (
           <div key={k} className="rounded-xl border border-line bg-panel p-4">
             <div className="text-xs text-mist">{k}</div>
@@ -88,6 +96,10 @@ export default async function TournamentAdminPage({ params }: { params: Promise<
           </div>
         ))}
       </div>
+
+      {open && perms.eliminate && stillIn.length === 1 && checkedIn > 1 && (
+        <DeclareWinnerButton tournamentId={t.id} registrationId={stillIn[0].registrationId} name={stillIn[0].name} />
+      )}
 
       {perms.manage && <Section title="Tournament status"><StatusControls tournamentId={t.id} status={t.status} /></Section>}
 
@@ -99,6 +111,15 @@ export default async function TournamentAdminPage({ params }: { params: Promise<
             <a className="rounded-lg border border-line px-4 py-2 text-sm" href={`/api/exports/tournament/${t.id}?format=csv`}>Download CSV</a>
             <a className="rounded-lg border border-line px-4 py-2 text-sm" href={`/api/exports/tournament/${t.id}?format=xlsx&history=1`}>Excel with corrections</a>
           </div>
+        </Section>
+      )}
+
+      {perms.eliminate && finishers.length > 0 && (
+        <Section title="Finishing order">
+          <p className="mb-3 text-sm text-mist">
+            Fix the order with ▲ ▼ or Move. Recorded bust times don&rsquo;t change, and every move is logged.{!open && " To undo a bust or the winner, reopen the tournament first."}
+          </p>
+          <FinishingOrder tournamentId={t.id} entries={finishers} checkedIn={checkedIn} timezone={venue.timezone} canUndo={open} />
         </Section>
       )}
 

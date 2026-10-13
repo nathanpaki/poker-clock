@@ -2,16 +2,23 @@
 
 import { useMemo, useState } from "react";
 import { clockAction, type ClockInput } from "@/actions/clock";
-import { checkIn, eliminate, quickAddPlayer, registerPlayers } from "@/actions/roster";
+import { checkIn, declareWinner, eliminate, quickAddPlayer, registerPlayers } from "@/actions/roster";
 import { ClockDisplay } from "@/components/clock/clock-display";
 import { useTournamentClock } from "@/components/clock/use-tournament-clock";
 import { Button, Input } from "@/components/ui";
 import { Feedback, useAction } from "@/components/ui/use-action";
 import { formatTimeOfDay, ordinal } from "@/lib/format";
 import type { PublicSnapshot } from "@/server/tournament-state";
+import { FinishingOrder } from "./finishing-order";
 import { HoldButton } from "./hold-button";
 
-type Entry = { registrationId: string; name: string; checkedInAt: number | null; eliminated: boolean };
+type Entry = {
+  registrationId: string;
+  name: string;
+  checkedInAt: number | null;
+  eliminated: boolean;
+  elimination: { id: string; position: number | null; at: number; isWinner: boolean } | null;
+};
 type Perms = { clock: boolean; check_in: boolean; eliminate: boolean; managePlayers: boolean };
 
 export function StaffConsole({
@@ -58,7 +65,7 @@ export function StaffConsole({
       {tab === "Check in" && perms.check_in && (
         <CheckInPanel tournamentId={tournamentId} roster={roster} unregistered={unregistered} timezone={timezone} canQuickAdd={perms.managePlayers} refresh={clock.refresh} />
       )}
-      {tab === "I'm out" && perms.eliminate && <EliminationPanel tournamentId={tournamentId} roster={roster} refresh={clock.refresh} />}
+      {tab === "I'm out" && perms.eliminate && <EliminationPanel tournamentId={tournamentId} roster={roster} timezone={timezone} closed={closed} refresh={clock.refresh} />}
     </div>
   );
 }
@@ -204,12 +211,76 @@ function CheckInPanel({
   );
 }
 
-function EliminationPanel({ tournamentId, roster, refresh }: { tournamentId: string; roster: Entry[]; refresh: () => Promise<void> }) {
+function EliminationPanel({
+  tournamentId,
+  roster,
+  timezone,
+  closed,
+  refresh,
+}: {
+  tournamentId: string;
+  roster: Entry[];
+  timezone: string;
+  closed: boolean;
+  refresh: () => Promise<void>;
+}) {
   const { exec, pending, error, message } = useAction();
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Entry | null>(null);
   const alive = useMemo(() => roster.filter((r) => r.checkedInAt && !r.eliminated), [roster]);
   const list = alive.filter((r) => r.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const checkedIn = roster.filter((r) => r.checkedInAt).length;
+  const winner = roster.find((r) => r.elimination?.isWinner);
+  const finishers = roster
+    .filter((r) => r.elimination?.position)
+    .map((r) => ({ eliminationId: r.elimination!.id, name: r.name, position: r.elimination!.position!, at: r.elimination!.at, isWinner: r.elimination!.isWinner }));
+
+  const order = (
+    <details className="rounded-xl border border-line bg-panel/50 p-3" open={!!winner}>
+      <summary className="cursor-pointer font-display text-xl">Finishing order</summary>
+      <p className="mb-3 mt-1 text-sm text-mist">Wrong order? Use ▲ ▼ or Move to fix it. Bust times stay as recorded.</p>
+      <FinishingOrder tournamentId={tournamentId} entries={finishers} checkedIn={checkedIn} timezone={timezone} canUndo={!closed} onChanged={() => void refresh()} />
+    </details>
+  );
+
+  // Game over: show the result and the order.
+  if (winner)
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="rounded-xl border-2 border-amber bg-panel p-5 text-center">
+          <p className="font-display text-xl text-amber">Winner</p>
+          <p className="font-display text-5xl font-bold">{winner.name}</p>
+          <p className="mt-1 text-sm text-mist">The tournament is closed and the clock is stopped.</p>
+        </div>
+        {order}
+      </div>
+    );
+
+  // One player left: end the game with them in 1st.
+  if (alive.length === 1 && !closed) {
+    const last = alive[0];
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 rounded-xl border-2 border-amber bg-panel p-5">
+          <p className="text-mist">Last player standing</p>
+          <p className="font-display text-5xl font-bold">{last.name}</p>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() =>
+              confirm(`Declare ${last.name} the winner? This finishes them 1st, stops the clock and closes the tournament.`) &&
+              exec(() => declareWinner({ tournamentId, registrationId: last.registrationId }), { success: (d) => `${d?.name ?? last.name} wins!`, onSuccess: () => void refresh() })
+            }
+            className="w-full rounded-xl bg-amber px-6 py-5 font-display text-2xl font-bold text-ink disabled:opacity-50"
+          >
+            {pending ? "Saving…" : `Declare ${last.name} the winner`}
+          </button>
+          <Feedback error={error} message={message} />
+        </div>
+        {order}
+      </div>
+    );
+  }
 
   if (selected)
     return (
@@ -249,6 +320,7 @@ function EliminationPanel({ tournamentId, roster, refresh }: { tournamentId: str
         ))}
         {list.length === 0 && <li className="p-4 text-sm text-mist">{alive.length ? "No one still in matches that search." : "No checked-in players are still in."}</li>}
       </ul>
+      {finishers.length > 0 && order}
     </div>
   );
 }

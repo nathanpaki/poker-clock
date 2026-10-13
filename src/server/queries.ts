@@ -44,7 +44,7 @@ export type RosterEntry = {
   name: string;
   registeredAt: number;
   checkIn: { at: number; by: string | null } | null;
-  elimination: { id: string; at: number; by: string | null; position: number | null; levelNumber: number | null } | null;
+  elimination: { id: string; at: number; by: string | null; position: number | null; levelNumber: number | null; isWinner: boolean } | null;
 };
 
 /** Registrations for ONE tournament (caller must have authorized access). */
@@ -66,7 +66,7 @@ export async function getRoster(tournamentId: string, leagueId: string): Promise
       name: r.name,
       registeredAt: r.registeredAt.getTime(),
       checkIn: c ? { at: c.checkedInAt.getTime(), by: c.checkedInBy } : null,
-      elimination: e ? { id: e.id, at: e.eliminatedAt.getTime(), by: e.eliminatedBy, position: e.finishPosition, levelNumber: e.levelNumber } : null,
+      elimination: e ? { id: e.id, at: e.eliminatedAt.getTime(), by: e.eliminatedBy, position: e.finishPosition, levelNumber: e.levelNumber, isWinner: e.isWinner } : null,
     };
   });
 }

@@ -117,15 +117,20 @@ export async function playerCounts(q: Q, tournamentId: string) {
  */
 export async function recomputePositions(tx: Tx, tournamentId: string) {
   const { checkedIn } = await playerCounts(tx, tournamentId);
-  const elims = await tx
-    .select({ id: playerEliminations.id, pos: playerEliminations.finishPosition })
-    .from(playerEliminations)
-    .where(and(eq(playerEliminations.tournamentId, tournamentId), isNull(playerEliminations.voidedAt)))
-    .orderBy(asc(playerEliminations.eliminatedAt), asc(playerEliminations.id));
+  const elims = await activeEliminationsInOrder(tx, tournamentId);
   for (let i = 0; i < elims.length; i++) {
     const pos = checkedIn - i;
     if (elims[i].pos !== pos) await tx.update(playerEliminations).set({ finishPosition: pos }).where(eq(playerEliminations.id, elims[i].id));
   }
+}
+
+/** Active eliminations from worst finish to best. The declared winner is always last (1st place). */
+export async function activeEliminationsInOrder(q: Q, tournamentId: string) {
+  return q
+    .select({ id: playerEliminations.id, pos: playerEliminations.finishPosition, orderKey: playerEliminations.orderKey, isWinner: playerEliminations.isWinner })
+    .from(playerEliminations)
+    .where(and(eq(playerEliminations.tournamentId, tournamentId), isNull(playerEliminations.voidedAt)))
+    .orderBy(asc(playerEliminations.isWinner), asc(playerEliminations.orderKey), asc(playerEliminations.id));
 }
 
 export async function audit(
@@ -161,6 +166,7 @@ export type PublicSnapshot = {
   players: { checkedIn: number; remaining: number };
   eliminations: { position: number | null; name: string; at: number }[];
   eliminationsTotal: number;
+  winner: { name: string; at: number } | null;
   serverNow: number;
 };
 
@@ -181,18 +187,23 @@ export async function getPublicSnapshot(code: string): Promise<PublicSnapshot | 
   ]);
   const timer = await materializeOnRead(t.t.id, row, levels, now);
 
-  let elims: PublicSnapshot["eliminations"] = [];
-  if (t.t.showEliminationsPublic) {
-    const rows = await db
+  const elimBase = () =>
+    db
       .select({ position: playerEliminations.finishPosition, name: players.displayName, at: playerEliminations.eliminatedAt })
       .from(playerEliminations)
       .innerJoin(
         tournamentRegistrations,
         and(eq(tournamentRegistrations.id, playerEliminations.registrationId), eq(tournamentRegistrations.tournamentId, playerEliminations.tournamentId)),
       )
-      .innerJoin(players, and(eq(players.id, tournamentRegistrations.playerId), eq(players.leagueId, tournamentRegistrations.leagueId)))
-      .where(and(eq(playerEliminations.tournamentId, t.t.id), isNull(playerEliminations.voidedAt)))
-      .orderBy(desc(playerEliminations.eliminatedAt))
+      .innerJoin(players, and(eq(players.id, tournamentRegistrations.playerId), eq(players.leagueId, tournamentRegistrations.leagueId)));
+  const active = and(eq(playerEliminations.tournamentId, t.t.id), isNull(playerEliminations.voidedAt));
+  const [winnerRow] = await elimBase().where(and(active, eq(playerEliminations.isWinner, true))).limit(1);
+  let elims: PublicSnapshot["eliminations"] = [];
+  if (t.t.showEliminationsPublic) {
+    // Most recent busts by finishing order (worst-placed busts are oldest), excluding the winner.
+    const rows = await elimBase()
+      .where(and(active, eq(playerEliminations.isWinner, false)))
+      .orderBy(asc(playerEliminations.finishPosition))
       .limit(5);
     elims = rows.map((r) => ({ position: r.position, name: r.name, at: r.at.getTime() }));
   }
@@ -213,7 +224,8 @@ export async function getPublicSnapshot(code: string): Promise<PublicSnapshot | 
     timer,
     players: { checkedIn: counts.checkedIn, remaining: counts.remaining },
     eliminations: elims,
-    eliminationsTotal: counts.eliminated,
+    eliminationsTotal: counts.eliminated - (winnerRow ? 1 : 0),
+    winner: winnerRow ? { name: winnerRow.name, at: winnerRow.at.getTime() } : null,
     serverNow: Date.now(),
   };
 }

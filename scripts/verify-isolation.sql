@@ -23,8 +23,8 @@ INSERT INTO player_check_ins (registration_id,tournament_id) VALUES ('40000000-0
 UPDATE player_check_ins SET voided_at=now();
 INSERT INTO player_check_ins (registration_id,tournament_id) VALUES ('40000000-0000-0000-0000-00000000000a','30000000-0000-0000-0000-00000000000a');
 \echo '[9] expect OK then FAIL: duplicate active elimination'
-INSERT INTO player_eliminations (registration_id,tournament_id) VALUES ('40000000-0000-0000-0000-00000000000a','30000000-0000-0000-0000-00000000000a');
-INSERT INTO player_eliminations (registration_id,tournament_id) VALUES ('40000000-0000-0000-0000-00000000000a','30000000-0000-0000-0000-00000000000a');
+INSERT INTO player_eliminations (registration_id,tournament_id,order_key) VALUES ('40000000-0000-0000-0000-00000000000a','30000000-0000-0000-0000-00000000000a',1);
+INSERT INTO player_eliminations (registration_id,tournament_id,order_key) VALUES ('40000000-0000-0000-0000-00000000000a','30000000-0000-0000-0000-00000000000a',1);
 \echo '[10] expect FAIL: check-in pointing at a registration from another tournament id'
 UPDATE player_check_ins SET voided_at=now() WHERE voided_at IS NULL;
 INSERT INTO player_check_ins (registration_id,tournament_id) VALUES ('40000000-0000-0000-0000-00000000000a','99999999-0000-0000-0000-000000000000');
@@ -34,3 +34,8 @@ INSERT INTO blind_levels (tournament_id,position,small_blind,big_blind,duration_
 INSERT INTO venue_memberships (league_id,venue_id,user_id) VALUES ('00000000-0000-0000-0000-00000000000a','10000000-0000-0000-0000-00000000000a','stranger');
 \echo '[13] expect FAIL: duplicate public code'
 INSERT INTO tournaments (league_id,venue_id,name,scheduled_at,public_code,created_by) VALUES ('00000000-0000-0000-0000-00000000000a','10000000-0000-0000-0000-00000000000a','Dup',now(),'K7Q4MX','u');
+\echo '[14] expect FAIL: two active winners in one tournament'
+INSERT INTO players (id,league_id,display_name) VALUES ('20000000-0000-0000-0000-00000000000c','00000000-0000-0000-0000-00000000000a','Nia');
+INSERT INTO tournament_registrations (id,league_id,tournament_id,player_id) VALUES ('40000000-0000-0000-0000-00000000000c','00000000-0000-0000-0000-00000000000a','30000000-0000-0000-0000-00000000000a','20000000-0000-0000-0000-00000000000c');
+UPDATE player_eliminations SET is_winner = true WHERE voided_at IS NULL;
+INSERT INTO player_eliminations (registration_id,tournament_id,order_key,is_winner) VALUES ('40000000-0000-0000-0000-00000000000c','30000000-0000-0000-0000-00000000000a',2,true);

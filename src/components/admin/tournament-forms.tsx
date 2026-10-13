@@ -137,7 +137,7 @@ export type RosterRow = {
   registrationId: string;
   name: string;
   checkIn: { at: number; byName: string } | null;
-  elimination: { id: string; at: number; byName: string; position: number | null; levelNumber: number | null } | null;
+  elimination: { id: string; at: number; byName: string; position: number | null; levelNumber: number | null; isWinner: boolean } | null;
 };
 
 export function RosterTable({ tournamentId, rows, timezone, canCorrect, canUndoCheckIn }: { tournamentId: string; rows: RosterRow[]; timezone: string; canCorrect: boolean; canUndoCheckIn: boolean }) {
@@ -153,7 +153,9 @@ export function RosterTable({ tournamentId, rows, timezone, canCorrect, canUndoC
             <tr key={r.registrationId} className="border-t border-line">
               <td className="py-2">{r.name}</td>
               <td className="text-mist">{r.checkIn ? <>{formatTimeOfDay(r.checkIn.at, timezone)} <span className="text-xs">by {r.checkIn.byName}</span></> : "—"}</td>
-              <td className="text-mist">{r.elimination ? <>{formatTimeOfDay(r.elimination.at, timezone)} <span className="text-xs">by {r.elimination.byName}</span></> : r.checkIn ? "Still in" : ""}</td>
+              <td className="text-mist">
+                {r.elimination?.isWinner ? <span className="text-amber">Winner</span> : r.elimination ? <>{formatTimeOfDay(r.elimination.at, timezone)} <span className="text-xs">by {r.elimination.byName}</span></> : r.checkIn ? "Still in" : ""}
+              </td>
               <td className="font-display text-lg text-amber">{r.elimination?.position ? ordinal(r.elimination.position) : ""}</td>
               <td className="text-mist">{r.elimination?.levelNumber ?? ""}</td>
               <td className="whitespace-nowrap text-right">
@@ -166,7 +168,7 @@ export function RosterTable({ tournamentId, rows, timezone, canCorrect, canUndoC
                       if (reason) exec(() => voidElimination({ tournamentId, eliminationId: r.elimination!.id, reason }));
                     }}
                   >
-                    Undo out
+                    {r.elimination.isWinner ? "Undo winner" : "Undo out"}
                   </Button>
                 )}
                 {r.checkIn && !r.elimination && canUndoCheckIn && (

@@ -1,7 +1,7 @@
 import { formatDuration, formatInZone, slugify } from "./format";
 
 export type ExportCheckIn = { at: Date; by: string | null; voidedAt: Date | null; voidedBy: string | null; reason: string | null };
-export type ExportElimination = ExportCheckIn & { position: number | null; levelNumber: number | null };
+export type ExportElimination = ExportCheckIn & { position: number | null; levelNumber: number | null; isWinner?: boolean };
 
 export type ExportRegistration = {
   playerId: string;
@@ -54,18 +54,21 @@ export function buildExport(input: ExportInput) {
   const fmt = (d: Date | null | undefined) => formatInZone(d ?? null, tz);
   const who = (id: string | null) => (id ? input.userNames.get(id) ?? id : "");
   const endOfPlay = input.tournament.completedAt ?? input.now;
+  const active = (r: ExportRegistration) => ({ ci: r.checkIns.find((c) => !c.voidedAt) ?? null, el: r.eliminations.find((e) => !e.voidedAt) ?? null });
+  const winnerDeclared = input.registrations.some((r) => active(r).el?.isWinner);
+  // Legacy/no-winner case: a closed game with exactly one player never busted → that player is 1st.
+  const stillInAtClose = input.registrations.filter((r) => { const a = active(r); return a.ci && !a.el; }).length;
 
   const rows: Row[] = input.registrations.map((r) => {
-    const ci = r.checkIns.find((c) => !c.voidedAt) ?? null;
-    const el = r.eliminations.find((e) => !e.voidedAt) ?? null;
-    const status = !ci ? "No-show" : el ? "Eliminated" : input.tournament.completedAt ? "Finished (not eliminated)" : "Still in";
+    const { ci, el } = active(r);
+    const status = !ci ? "No-show" : el?.isWinner ? "Winner" : el ? "Eliminated" : input.tournament.completedAt ? "Finished (not eliminated)" : "Still in";
     const played = ci ? (el ? el.at.getTime() : endOfPlay.getTime()) - ci.at.getTime() : null;
     const corrections = input.includeHistory
       ? [
           ...r.checkIns.filter((c) => c.voidedAt).map((c) => `Check-in ${fmt(c.at)} by ${who(c.by)} undone ${fmt(c.voidedAt)} by ${who(c.voidedBy)}${c.reason ? ` (${c.reason})` : ""}`),
           ...r.eliminations
             .filter((e) => e.voidedAt)
-            .map((e) => `Elimination ${fmt(e.at)} by ${who(e.by)}${e.position ? ` as #${e.position}` : ""} undone ${fmt(e.voidedAt)} by ${who(e.voidedBy)}${e.reason ? ` (${e.reason})` : ""}`),
+            .map((e) => `${e.isWinner ? "Winner declared" : "Elimination"} ${fmt(e.at)} by ${who(e.by)}${e.position ? ` as #${e.position}` : ""} undone ${fmt(e.voidedAt)} by ${who(e.voidedBy)}${e.reason ? ` (${e.reason})` : ""}`),
         ].join(" | ")
       : r.checkIns.some((c) => c.voidedAt) || r.eliminations.some((e) => e.voidedAt)
         ? "Corrected (export with history for details)"
@@ -82,9 +85,9 @@ export function buildExport(input: ExportInput) {
       "Check-in time": fmt(ci?.at),
       "Checked in by": who(ci?.by ?? null),
       Status: status,
-      "Finish position": el?.position ?? (ci && !el && input.tournament.completedAt ? 1 : ""),
-      "Elimination time": fmt(el?.at),
-      "Eliminated by": who(el?.by ?? null),
+      "Finish position": el?.position ?? (ci && !el && input.tournament.completedAt && !winnerDeclared && stillInAtClose === 1 ? 1 : ""),
+      "Elimination time": el?.isWinner ? "" : fmt(el?.at),
+      "Eliminated by": el?.isWinner ? "" : who(el?.by ?? null),
       "Level at elimination": el?.levelNumber ?? "",
       "Time played": played === null ? "" : formatDuration(played),
       Corrections: corrections,
@@ -97,6 +100,7 @@ export function buildExport(input: ExportInput) {
 
   const checkedIn = rows.filter((r) => r["Checked in"] === "Yes").length;
   const eliminated = rows.filter((r) => r.Status === "Eliminated").length;
+  const winner = rows.find((r) => r.Status === "Winner") ?? (rows.filter((r) => r["Finish position"] === 1)[0] as Row | undefined);
   const summary: [string, string | number][] = [
     ["Tournament", input.tournament.name],
     ["League", input.leagueName],
@@ -107,6 +111,7 @@ export function buildExport(input: ExportInput) {
     ["Ended", fmt(input.tournament.completedAt) || "In progress"],
     ["Registered", rows.length],
     ["Checked in", checkedIn],
+    ["Winner", winner ? String(winner.Player) : ""],
     ["Eliminated", eliminated],
     ["No-shows", rows.length - checkedIn],
     ["Exported", fmt(input.now)],

@@ -47,7 +47,7 @@ export async function generateTournamentExport(tournamentId: string, format: Exp
     checkIns: cis.filter((c) => c.registrationId === r.id).map((c) => ({ at: c.checkedInAt, by: c.checkedInBy, voidedAt: c.voidedAt, voidedBy: c.voidedBy, reason: c.voidReason })),
     eliminations: els
       .filter((e) => e.registrationId === r.id)
-      .map((e) => ({ at: e.eliminatedAt, by: e.eliminatedBy, voidedAt: e.voidedAt, voidedBy: e.voidedBy, reason: e.voidReason, position: e.finishPosition, levelNumber: e.levelNumber })),
+      .map((e) => ({ at: e.eliminatedAt, by: e.eliminatedBy, voidedAt: e.voidedAt, voidedBy: e.voidedBy, reason: e.voidReason, position: e.finishPosition, levelNumber: e.levelNumber, isWinner: e.isWinner })),
   }));
 
   const { rows, summary } = buildExport({

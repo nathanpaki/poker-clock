@@ -38,12 +38,20 @@ export function ClockDisplay({ code, clock, qrSvg, compact = false }: Props) {
   const level = view.level;
   const onBreak = view.onBreak;
   const status = effective.status;
-  const oneMinute = status === "running" && level?.kind === "level" && view.remaining <= 60_000 && view.remaining > 0;
+  const gameOver = t.status === "completed" || !!snap.winner;
+  const oneMinute = !gameOver && status === "running" && level?.kind === "level" && view.remaining <= 60_000 && view.remaining > 0;
   const blindText = level && level.kind === "level" ? `${formatChips(level.smallBlind)} / ${formatChips(level.bigBlind)}` : "";
   const next = view.nextLevel;
 
-  const statusNote =
-    status === "not_started" ? "Waiting to start" : status === "paused" ? "Paused" : status === "finished" ? "End of structure" : null;
+  const statusNote = gameOver
+    ? "Tournament over"
+    : status === "not_started"
+      ? "Waiting to start"
+      : status === "paused"
+        ? "Paused"
+        : status === "finished"
+          ? "End of structure"
+          : null;
 
   const breakNote =
     status === "finished"
@@ -156,10 +164,17 @@ export function ClockDisplay({ code, clock, qrSvg, compact = false }: Props) {
       {/* Bottom bar */}
       {!compact && (
         <footer className="grid grid-cols-1 items-center gap-[1.6vh] rounded-xl border border-line bg-bar px-[2.4vh] py-[1.8vh] md:grid-cols-[auto_1fr_auto]">
-          <div className="font-display leading-none">
-            <span className="text-[clamp(1.6rem,6vh,4.5rem)] font-bold tabular-nums text-snow">{snap.players.remaining}</span>
-            <span className="text-[clamp(1rem,3vh,2.2rem)] text-mist"> of {snap.players.checkedIn} still in</span>
-          </div>
+          {snap.winner ? (
+            <div className="font-display leading-none">
+              <span className="block text-[clamp(0.9rem,2.4vh,1.8rem)] text-amber">Winner</span>
+              <span className="text-[clamp(1.6rem,6vh,4.5rem)] font-bold text-snow">{snap.winner.name}</span>
+            </div>
+          ) : (
+            <div className="font-display leading-none">
+              <span className="text-[clamp(1.6rem,6vh,4.5rem)] font-bold tabular-nums text-snow">{snap.players.remaining}</span>
+              <span className="text-[clamp(1rem,3vh,2.2rem)] text-mist"> of {snap.players.checkedIn} still in</span>
+            </div>
+          )}
           <ol className="flex min-w-0 flex-wrap items-baseline gap-x-[2.2vh] gap-y-1 font-display text-[clamp(0.95rem,2.6vh,2rem)] md:justify-center" aria-label="Recent eliminations">
             {t.showEliminations &&
               snap.eliminations.map((e, i) => (

@@ -6,7 +6,7 @@
  *
  * WARNING: drops and recreates the `public` schema. Never point at production.
  */
-import { readFileSync } from "node:fs";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -17,7 +17,7 @@ import { createLeague, createVenue, setVenueAccess } from "@/actions/leagues";
 import { createPlayer } from "@/actions/players";
 import { createTournament, setTournamentStatus } from "@/actions/tournaments";
 import { clockAction } from "@/actions/clock";
-import { checkIn, eliminate, registerPlayers, voidElimination } from "@/actions/roster";
+import { checkIn, declareWinner, eliminate, moveElimination, registerPlayers, voidElimination } from "@/actions/roster";
 import { getRoster, tournamentsForUser } from "@/server/queries";
 import { getPublicSnapshot, rowToState } from "@/server/tournament-state";
 import { generateTournamentExport } from "@/server/export";
@@ -38,9 +38,9 @@ const ids: Record<string, string> = {};
 
 beforeAll(async () => {
   if (!process.env.TEST_DATABASE_URL) throw new Error("Set TEST_DATABASE_URL to a scratch database.");
-  await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
-  const sql = readFileSync(path.resolve(__dirname, "../../drizzle/0000_init.sql"), "utf8");
-  for (const stmt of sql.split("--> statement-breakpoint")) if (stmt.trim()) await pool.query(stmt);
+  await pool.query("DROP SCHEMA IF EXISTS drizzle CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  // Apply EVERY migration in order, exactly as production does.
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../drizzle") });
   process.env.PLATFORM_ADMIN_USER_IDS = "platform";
 
   as("platform");
@@ -172,7 +172,7 @@ describe("check-in and elimination", () => {
     expect(positions).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(after.every((r) => !r.elimination || r.elimination.levelNumber === 3)).toBe(true);
     const last = after.find((r) => !r.elimination)!;
-    expect(fail(await eliminate({ tournamentId: ids.tCraft, registrationId: last.registrationId }))).toMatch(/last player/);
+    expect(fail(await eliminate({ tournamentId: ids.tCraft, registrationId: last.registrationId }))).toMatch(/Declare them the winner/);
     expect(fail(await eliminate({ tournamentId: ids.tCraft, registrationId: victims[0].registrationId }))).toMatch(/Already eliminated/);
     const code = (await db.query.tournaments.findFirst({ where: (t, { eq }) => eq(t.id, ids.tCraft) }))!.publicCode;
     const snap = (await getPublicSnapshot(code))!;
@@ -191,6 +191,90 @@ describe("check-in and elimination", () => {
     expect(positions).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
     const log = await db.query.auditLogs.findFirst({ where: (a, { eq }) => eq(a.action, "elimination.void") });
     expect(log?.actorUserId).toBe("staffA");
+  });
+
+  it("reorders bust-outs without changing recorded bust times", async () => {
+    as("staffA");
+    const byPos = async () => {
+      const r = await getRoster(ids.tCraft, ids.leagueA);
+      return Object.fromEntries(r.filter((x) => x.elimination).map((x) => [x.elimination!.position!, x]));
+    };
+    const before = await byPos(); // positions 3..10 busted, 2 players still in
+    const fifth = before[5];
+    ok(await moveElimination({ tournamentId: ids.tCraft, eliminationId: fifth.elimination!.id, toPosition: 3 }));
+    const after = await byPos();
+    expect(after[3].name).toBe(fifth.name);
+    expect(after[4].name).toBe(before[3].name);
+    expect(after[5].name).toBe(before[4].name);
+    expect(after[6].name).toBe(before[6].name);
+    expect(after[3].elimination!.at).toBe(fifth.elimination!.at); // bust time untouched
+    // ▼ one step
+    ok(await moveElimination({ tournamentId: ids.tCraft, eliminationId: after[3].elimination!.id, toPosition: 4 }));
+    expect((await byPos())[4].name).toBe(fifth.name);
+    // Can't take a position that belongs to a player still in.
+    expect(fail(await moveElimination({ tournamentId: ids.tCraft, eliminationId: fifth.elimination!.id, toPosition: 2 }))).toMatch(/from 3 to 10/);
+    const log = await db.query.auditLogs.findFirst({ where: (a, { eq }) => eq(a.action, "elimination.reorder") });
+    expect(log?.data).toMatchObject({ fromPosition: 5, toPosition: 3 });
+  });
+
+  it("a new bust after reordering still lands in the next position", async () => {
+    as("staffA");
+    expect(fail(await declareWinner({ tournamentId: ids.tCraft, registrationId: (await getRoster(ids.tCraft, ids.leagueA)).find((r) => r.checkIn && !r.elimination)!.registrationId }))).toMatch(/still 2 players/);
+    const alive = (await getRoster(ids.tCraft, ids.leagueA)).filter((r) => r.checkIn && !r.elimination);
+    const r = ok(await eliminate({ tournamentId: ids.tCraft, registrationId: alive[0].registrationId }));
+    expect(r!.position).toBe(2);
+  });
+
+  it("declares the last player the winner: 1st place, clock stopped, tournament closed", async () => {
+    as("staffA");
+    const last = (await getRoster(ids.tCraft, ids.leagueA)).find((r) => r.checkIn && !r.elimination)!;
+    expect(ok(await declareWinner({ tournamentId: ids.tCraft, registrationId: last.registrationId }))!.name).toBe(last.name);
+    const roster = await getRoster(ids.tCraft, ids.leagueA);
+    expect(roster.map((x) => x.elimination?.position).sort((a, b) => a! - b!)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(roster.find((x) => x.elimination?.position === 1)?.elimination?.isWinner).toBe(true);
+    const t = await db.query.tournaments.findFirst({ where: (x, { eq }) => eq(x.id, ids.tCraft) });
+    expect(t?.status).toBe("completed");
+    const timer = rowToState(await db.query.tournamentTimerState.findFirst({ where: eq(tournamentTimerState.tournamentId, ids.tCraft) }));
+    expect(timer.status).toBe("paused");
+    const snap = (await getPublicSnapshot(t!.publicCode))!;
+    expect(snap.winner?.name).toBe(last.name);
+    expect(snap.players.remaining).toBe(0);
+    expect(snap.eliminationsTotal).toBe(9);
+    expect(snap.eliminations[0].position).toBe(2);
+    expect(fail(await declareWinner({ tournamentId: ids.tCraft, registrationId: last.registrationId }))).toMatch(/closed/);
+  });
+
+  it("finishing order can still be fixed after the game is closed; the winner stays 1st", async () => {
+    as("staffA");
+    const byPos = async () => Object.fromEntries((await getRoster(ids.tCraft, ids.leagueA)).map((x) => [x.elimination!.position!, x]));
+    const before = await byPos();
+    ok(await moveElimination({ tournamentId: ids.tCraft, eliminationId: before[2].elimination!.id, toPosition: 3 }));
+    const after = await byPos();
+    expect([after[2].name, after[3].name]).toEqual([before[3].name, before[2].name]);
+    expect(after[1].name).toBe(before[1].name);
+    expect(fail(await moveElimination({ tournamentId: ids.tCraft, eliminationId: after[1].elimination!.id, toPosition: 2 }))).toMatch(/winner always finishes 1st/);
+    expect(fail(await moveElimination({ tournamentId: ids.tCraft, eliminationId: after[2].elimination!.id, toPosition: 1 }))).toMatch(/from 2 to 10/);
+  });
+
+  it("an accidental winner can be undone after reopening, then declared again", async () => {
+    as("staffA");
+    const winner = (await getRoster(ids.tCraft, ids.leagueA)).find((r) => r.elimination?.isWinner)!;
+    expect(fail(await voidElimination({ tournamentId: ids.tCraft, eliminationId: winner.elimination!.id, reason: "oops" }))).toMatch(/closed/);
+    as("adminA");
+    ok(await setTournamentStatus({ tournamentId: ids.tCraft, status: "running" }));
+    as("staffA");
+    ok(await voidElimination({ tournamentId: ids.tCraft, eliminationId: winner.elimination!.id, reason: "declared too early" }));
+    const mid = await getRoster(ids.tCraft, ids.leagueA);
+    expect(mid.filter((r) => !r.elimination)).toHaveLength(1);
+    expect(mid.filter((r) => r.elimination).map((r) => r.elimination!.position).sort((a, b) => a! - b!)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    ok(await declareWinner({ tournamentId: ids.tCraft, registrationId: winner.registrationId }));
+    expect((await getRoster(ids.tCraft, ids.leagueA)).find((r) => r.elimination?.isWinner)?.name).toBe(winner.name);
+  });
+
+  it("export shows the winner", async () => {
+    const f = await generateTournamentExport(ids.tCraft, "csv", false);
+    const lines = f.body.toString("utf8").split("\r\n");
+    expect(lines[1]).toContain(",Winner,1,");
   });
 
   it("an elimination in one tournament never touches another tournament's records", async () => {
